@@ -1,0 +1,99 @@
+import cv2
+import numpy as np
+import onnxruntime as ort
+from picamera2 import Picamera2
+
+# Load emotion model
+session = ort.InferenceSession(
+    "emotion_model.onnx",
+    providers=["CPUExecutionProvider"]
+)
+
+input_name = session.get_inputs()[0].name
+output_name = session.get_outputs()[0].name
+
+emotions = ["happy", "sad", "neutral"]
+
+# Face detector
+face_cascade = cv2.CascadeClassifier(
+    cv2.data.haarcascades +
+    "haarcascade_frontalface_default.xml"
+)
+
+# Camera setup
+picam2 = Picamera2()
+picam2.configure(
+    picam2.create_preview_configuration(
+        main={"size": (640, 480),
+              "format": "RGB888"}
+    )
+)
+picam2.start()
+
+while True:
+
+    # Capture frame
+    frame = picam2.capture_array()
+
+    # Convert to grayscale
+    gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+
+    # Detect faces
+    faces = face_cascade.detectMultiScale(
+        gray,
+        scaleFactor=1.2,
+        minNeighbors=5
+    )
+
+    for (x, y, w, h) in faces:
+
+        # Extract face
+        face = gray[y:y+h, x:x+w]
+
+        # Resize for emotion model
+        face = cv2.resize(face, (48, 48))
+
+        # Normalize
+        face = face.astype(np.float32) / 255.0
+
+        # Shape: (1, 1, 48, 48)
+        face = np.expand_dims(face, axis=0)
+        face = np.expand_dims(face, axis=0)
+
+        # Predict
+        result = session.run(
+            [output_name],
+            {input_name: face}
+        )[0]
+
+        emotion = emotions[np.argmax(result)]
+
+        print("Emotion:", emotion)
+
+        # Display result
+        cv2.rectangle(
+            frame,
+            (x, y),
+            (x+w, y+h),
+            (0, 255, 0),
+            2
+        )
+
+        cv2.putText(
+            frame,
+            emotion,
+            (x, y-10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 255, 0),
+            2
+        )
+
+    cv2.imshow("Emotion Detection", frame)
+
+    # Press Q to quit
+    if cv2.waitKey(1) & 0xFF == ord("q"):
+        break
+
+picam2.stop()
+cv2.destroyAllWindows()
