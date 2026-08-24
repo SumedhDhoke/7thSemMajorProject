@@ -5,26 +5,26 @@ from picamera2 import Picamera2
 import sys
 
 # ==========================================
-# 1. LOAD ONNX EMOTION MODEL
+# 1. LOAD EMOTION MODEL
 # ==========================================
 
-MODEL_PATH = "/home/majorproject/Downloads/emotion_model.onnx"
+EMOTION_MODEL = "/home/majorproject/Downloads/emotion_model.onnx"
 
 try:
-    session = ort.InferenceSession(
-        MODEL_PATH,
+    emotion_session = ort.InferenceSession(
+        EMOTION_MODEL,
         providers=["CPUExecutionProvider"]
     )
+
+    emotion_input = emotion_session.get_inputs()[0].name
+    emotion_output = emotion_session.get_outputs()[0].name
+
     print("Emotion model loaded successfully.")
+
 except Exception as e:
     print("ERROR: Could not load emotion model.")
     print(e)
     sys.exit()
-
-
-# Get model input and output names
-input_name = session.get_inputs()[0].name
-output_name = session.get_outputs()[0].name
 
 
 # ==========================================
@@ -44,7 +44,53 @@ emotions = [
 
 
 # ==========================================
-# 3. LOAD FACE DETECTOR
+# 3. LOAD YOLO OBJECT DETECTION MODEL
+# ==========================================
+
+OBJECT_MODEL = "/home/majorproject/Downloads/yolov8n.onnx"
+
+try:
+    object_session = ort.InferenceSession(
+        OBJECT_MODEL,
+        providers=["CPUExecutionProvider"]
+    )
+
+    object_input = object_session.get_inputs()[0].name
+
+    print("Object detection model loaded successfully.")
+
+except Exception as e:
+    print("ERROR: Could not load object detection model.")
+    print(e)
+    sys.exit()
+
+
+# ==========================================
+# 4. COCO OBJECT LABELS
+# ==========================================
+
+classes = [
+    "person", "bicycle", "car", "motorcycle", "airplane",
+    "bus", "train", "truck", "boat", "traffic light",
+    "fire hydrant", "stop sign", "parking meter", "bench",
+    "bird", "cat", "dog", "horse", "sheep", "cow",
+    "elephant", "bear", "zebra", "giraffe", "backpack",
+    "umbrella", "handbag", "tie", "suitcase", "frisbee",
+    "skis", "snowboard", "sports ball", "kite", "baseball bat",
+    "baseball glove", "skateboard", "surfboard", "tennis racket",
+    "bottle", "wine glass", "cup", "fork", "knife", "spoon",
+    "bowl", "banana", "apple", "sandwich", "orange",
+    "broccoli", "carrot", "hot dog", "pizza", "donut", "cake",
+    "chair", "couch", "potted plant", "bed", "dining table",
+    "toilet", "TV", "laptop", "mouse", "remote", "keyboard",
+    "cell phone", "microwave", "oven", "toaster", "sink",
+    "refrigerator", "book", "clock", "vase", "scissors",
+    "teddy bear", "hair drier", "toothbrush"
+]
+
+
+# ==========================================
+# 5. LOAD FACE DETECTOR
 # ==========================================
 
 CASCADE_PATH = (
@@ -54,19 +100,27 @@ CASCADE_PATH = (
 
 face_cascade = cv2.CascadeClassifier(CASCADE_PATH)
 
-# Important: Check if cascade loaded correctly
 if face_cascade.empty():
+
     print("\nERROR: Face detector could not be loaded!")
     print("Checked path:", CASCADE_PATH)
-    print("\nRun this command to find the correct path:")
-    print("find /usr -type f -name 'haarcascade_frontalface_default.xml' 2>/dev/null")
+
+    print(
+        "\nFind the correct path using:"
+    )
+
+    print(
+        "find /usr -type f -name "
+        "'haarcascade_frontalface_default.xml' 2>/dev/null"
+    )
+
     sys.exit()
 
 print("Face detector loaded successfully.")
 
 
 # ==========================================
-# 4. START RASPBERRY PI CAMERA
+# 6. START CAMERA
 # ==========================================
 
 picam2 = Picamera2()
@@ -86,18 +140,53 @@ print("Press Q to quit.")
 
 
 # ==========================================
-# 5. MAIN EMOTION DETECTION LOOP
+# 7. OBJECT DETECTION FUNCTION
+# ==========================================
+
+def detect_objects(frame):
+
+    # Resize image for YOLO
+    image = cv2.resize(frame, (640, 640))
+
+    # Convert to RGB
+    image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+
+    # Normalize
+    image = image.astype(np.float32) / 255.0
+
+    # Change HWC -> CHW
+    image = np.transpose(image, (2, 0, 1))
+
+    # Add batch dimension
+    image = np.expand_dims(image, axis=0)
+
+    # Run YOLO
+    output = object_session.run(
+        None,
+        {object_input: image}
+    )[0]
+
+    return output
+
+
+# ==========================================
+# 8. MAIN LOOP
 # ==========================================
 
 while True:
 
-    # Capture frame from Raspberry Pi camera
+    # Capture camera frame
     frame = picam2.capture_array()
 
-    # Convert RGB image to grayscale
-    gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+    # ======================================
+    # FACE + EMOTION DETECTION
+    # ======================================
 
-    # Detect faces
+    gray = cv2.cvtColor(
+        frame,
+        cv2.COLOR_RGB2GRAY
+    )
+
     faces = face_cascade.detectMultiScale(
         gray,
         scaleFactor=1.2,
@@ -105,67 +194,205 @@ while True:
         minSize=(60, 60)
     )
 
-    # Process every detected face
     for (x, y, w, h) in faces:
 
         # Extract face
         face = gray[y:y+h, x:x+w]
 
-        # Resize to FER+ model input size
-        face = cv2.resize(face, (64, 64))
+        # Resize
+        face = cv2.resize(
+            face,
+            (64, 64)
+        )
 
-        # Normalize pixel values
-        face = face.astype(np.float32) / 255.0
+        # Normalize
+        face = face.astype(
+            np.float32
+        ) / 255.0
 
-        # Model expects shape: (1, 1, 64, 64)
-        face = np.expand_dims(face, axis=0)
-        face = np.expand_dims(face, axis=0)
+        # Shape: 1 x 1 x 64 x 64
+        face = np.expand_dims(
+            face,
+            axis=0
+        )
 
-        # Run emotion prediction
-        result = session.run(
-            [output_name],
-            {input_name: face}
+        face = np.expand_dims(
+            face,
+            axis=0
+        )
+
+        # Emotion prediction
+        result = emotion_session.run(
+            [emotion_output],
+            {emotion_input: face}
         )[0]
 
-        # Get highest probability emotion
         emotion_index = np.argmax(result)
-        emotion = emotions[emotion_index]
 
-        print("Detected emotion:", emotion)
+        emotion = emotions[
+            emotion_index
+        ]
 
-        # Draw rectangle around face
+        print(
+            "Emotion:",
+            emotion
+        )
+
+        # Face rectangle
         cv2.rectangle(
             frame,
             (x, y),
-            (x + w, y + h),
+            (x+w, y+h),
             (0, 255, 0),
             2
         )
 
-        # Display detected emotion
+        # Emotion text
         cv2.putText(
             frame,
-            emotion,
-            (x, y - 10),
+            "Emotion: " + emotion,
+            (x, y-10),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
+            0.7,
             (0, 255, 0),
             2
         )
 
-    # Show camera output
-    cv2.imshow("Raspberry Pi Emotion Detection", frame)
 
-    # Press Q to quit
+    # ======================================
+    # OBJECT DETECTION
+    # ======================================
+
+    try:
+
+        output = detect_objects(frame)
+
+        # YOLOv8 output normally:
+        # [1, 84, 8400]
+
+        predictions = np.squeeze(
+            output
+        )
+
+        predictions = predictions.T
+
+        for detection in predictions:
+
+            # Bounding box
+            x_center = detection[0]
+            y_center = detection[1]
+
+            width = detection[2]
+            height = detection[3]
+
+            # Class scores
+            scores = detection[4:]
+
+            class_id = np.argmax(scores)
+
+            confidence = scores[class_id]
+
+            # Confidence threshold
+            if confidence < 0.5:
+                continue
+
+            # Convert coordinates
+            x1 = int(
+                (x_center - width / 2)
+                * frame.shape[1] / 640
+            )
+
+            y1 = int(
+                (y_center - height / 2)
+                * frame.shape[0] / 640
+            )
+
+            x2 = int(
+                (x_center + width / 2)
+                * frame.shape[1] / 640
+            )
+
+            y2 = int(
+                (y_center + height / 2)
+                * frame.shape[0] / 640
+            )
+
+            # Keep coordinates inside frame
+            x1 = max(0, x1)
+            y1 = max(0, y1)
+
+            x2 = min(
+                frame.shape[1],
+                x2
+            )
+
+            y2 = min(
+                frame.shape[0],
+                y2
+            )
+
+            # Object name
+            object_name = classes[
+                class_id
+            ]
+
+            print(
+                "Object:",
+                object_name,
+                "Confidence:",
+                round(
+                    float(confidence),
+                    2
+                )
+            )
+
+            # Draw object
+            cv2.rectangle(
+                frame,
+                (x1, y1),
+                (x2, y2),
+                (255, 0, 0),
+                2
+            )
+
+            cv2.putText(
+                frame,
+                object_name,
+                (x1, y1 - 5),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (255, 0, 0),
+                2
+            )
+
+    except Exception as e:
+
+        print(
+            "Object detection error:",
+            e
+        )
+
+
+    # ======================================
+    # DISPLAY
+    # ======================================
+
+    cv2.imshow(
+        "AI Companion Camera",
+        frame
+    )
+
+    # Q = quit
     if cv2.waitKey(1) & 0xFF == ord("q"):
         break
 
 
 # ==========================================
-# 6. CLEANUP
+# 9. CLEANUP
 # ==========================================
 
 picam2.stop()
+
 cv2.destroyAllWindows()
 
 print("Program stopped.")
