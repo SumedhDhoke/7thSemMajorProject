@@ -2,98 +2,170 @@ import cv2
 import numpy as np
 import onnxruntime as ort
 from picamera2 import Picamera2
+import sys
 
-# Load emotion model
-session = ort.InferenceSession(
-    "emotion_model.onnx",
-    providers=["CPUExecutionProvider"]
-)
+# ==========================================
+# 1. LOAD ONNX EMOTION MODEL
+# ==========================================
 
+MODEL_PATH = "/home/majorproject/Downloads/emotion_model.onnx"
+
+try:
+    session = ort.InferenceSession(
+        MODEL_PATH,
+        providers=["CPUExecutionProvider"]
+    )
+    print("Emotion model loaded successfully.")
+except Exception as e:
+    print("ERROR: Could not load emotion model.")
+    print(e)
+    sys.exit()
+
+
+# Get model input and output names
 input_name = session.get_inputs()[0].name
 output_name = session.get_outputs()[0].name
 
-emotions = ["happy", "sad", "neutral"]
 
-# Face detector
-face_cascade = cv2.CascadeClassifier(
-    cv2.data.haarcascades +
+# ==========================================
+# 2. EMOTION LABELS
+# ==========================================
+
+emotions = [
+    "neutral",
+    "happy",
+    "surprise",
+    "sad",
+    "anger",
+    "disgust",
+    "fear",
+    "contempt"
+]
+
+
+# ==========================================
+# 3. LOAD FACE DETECTOR
+# ==========================================
+
+CASCADE_PATH = (
+    "/usr/share/opencv4/haarcascades/"
     "haarcascade_frontalface_default.xml"
 )
 
-# Camera setup
+face_cascade = cv2.CascadeClassifier(CASCADE_PATH)
+
+# Important: Check if cascade loaded correctly
+if face_cascade.empty():
+    print("\nERROR: Face detector could not be loaded!")
+    print("Checked path:", CASCADE_PATH)
+    print("\nRun this command to find the correct path:")
+    print("find /usr -type f -name 'haarcascade_frontalface_default.xml' 2>/dev/null")
+    sys.exit()
+
+print("Face detector loaded successfully.")
+
+
+# ==========================================
+# 4. START RASPBERRY PI CAMERA
+# ==========================================
+
 picam2 = Picamera2()
-picam2.configure(
-    picam2.create_preview_configuration(
-        main={"size": (640, 480),
-              "format": "RGB888"}
-    )
+
+camera_config = picam2.create_preview_configuration(
+    main={
+        "size": (640, 480),
+        "format": "RGB888"
+    }
 )
+
+picam2.configure(camera_config)
 picam2.start()
+
+print("Camera started.")
+print("Press Q to quit.")
+
+
+# ==========================================
+# 5. MAIN EMOTION DETECTION LOOP
+# ==========================================
 
 while True:
 
-    # Capture frame
+    # Capture frame from Raspberry Pi camera
     frame = picam2.capture_array()
 
-    # Convert to grayscale
+    # Convert RGB image to grayscale
     gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
 
     # Detect faces
     faces = face_cascade.detectMultiScale(
         gray,
         scaleFactor=1.2,
-        minNeighbors=5
+        minNeighbors=5,
+        minSize=(60, 60)
     )
 
+    # Process every detected face
     for (x, y, w, h) in faces:
 
         # Extract face
         face = gray[y:y+h, x:x+w]
 
-        # Resize for emotion model
-        face = cv2.resize(face, (48, 48))
+        # Resize to FER+ model input size
+        face = cv2.resize(face, (64, 64))
 
-        # Normalize
+        # Normalize pixel values
         face = face.astype(np.float32) / 255.0
 
-        # Shape: (1, 1, 48, 48)
+        # Model expects shape: (1, 1, 64, 64)
         face = np.expand_dims(face, axis=0)
         face = np.expand_dims(face, axis=0)
 
-        # Predict
+        # Run emotion prediction
         result = session.run(
             [output_name],
             {input_name: face}
         )[0]
 
-        emotion = emotions[np.argmax(result)]
+        # Get highest probability emotion
+        emotion_index = np.argmax(result)
+        emotion = emotions[emotion_index]
 
-        print("Emotion:", emotion)
+        print("Detected emotion:", emotion)
 
-        # Display result
+        # Draw rectangle around face
         cv2.rectangle(
             frame,
             (x, y),
-            (x+w, y+h),
+            (x + w, y + h),
             (0, 255, 0),
             2
         )
 
+        # Display detected emotion
         cv2.putText(
             frame,
             emotion,
-            (x, y-10),
+            (x, y - 10),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.8,
             (0, 255, 0),
             2
         )
 
-    cv2.imshow("Emotion Detection", frame)
+    # Show camera output
+    cv2.imshow("Raspberry Pi Emotion Detection", frame)
 
     # Press Q to quit
     if cv2.waitKey(1) & 0xFF == ord("q"):
         break
 
+
+# ==========================================
+# 6. CLEANUP
+# ==========================================
+
 picam2.stop()
 cv2.destroyAllWindows()
+
+print("Program stopped.")
