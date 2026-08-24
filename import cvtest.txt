@@ -6,9 +6,9 @@ import sys
 from collections import deque, Counter
 
 
-# ==========================================
+# ============================================================
 # FILE PATHS
-# ==========================================
+# ============================================================
 
 EMOTION_MODEL = "/home/majorproject/Downloads/emotion_model.onnx"
 
@@ -28,9 +28,9 @@ CASCADE = (
 )
 
 
-# ==========================================
+# ============================================================
 # EMOTION MODEL
-# ==========================================
+# ============================================================
 
 try:
 
@@ -42,77 +42,65 @@ try:
     emotion_input = emotion_net.get_inputs()[0].name
     emotion_output = emotion_net.get_outputs()[0].name
 
-    print("Emotion model: OK")
+    print("Emotion model loaded successfully.")
 
 except Exception as e:
 
-    print("Emotion model error:")
+    print("ERROR: Emotion model could not be loaded.")
     print(e)
     sys.exit()
 
 
-# ==========================================
-# FER+ EMOTION LABELS
-# ==========================================
+# ============================================================
+# FER+ EMOTIONS
+# ============================================================
 
 emotions = [
-    "neutral",
-    "happy",
-    "surprise",
-    "sad",
-    "anger",
-    "disgust",
-    "fear",
-    "contempt"
+    "Neutral",
+    "Happy",
+    "Surprise",
+    "Sad",
+    "Angry",
+    "Disgust",
+    "Fear",
+    "Contempt"
 ]
 
 
-# ==========================================
-# MAP EMOTIONS FOR ROBOT
-# ==========================================
+# ============================================================
+# SOFTMAX
+# ============================================================
 
-def get_robot_emotion(result):
+def softmax(x):
 
-    scores = result[0]
+    x = x - np.max(x)
 
-    emotion_id = np.argmax(scores)
+    exp = np.exp(x)
 
-    emotion = emotions[emotion_id]
-
-    # Simplify emotions for robot
-    if emotion == "disgust":
-        emotion = "anger"
-
-    elif emotion == "fear":
-        emotion = "surprise"
-
-    elif emotion == "contempt":
-        emotion = "neutral"
-
-    return emotion
+    return exp / np.sum(exp)
 
 
-# ==========================================
+# ============================================================
 # EMOTION SMOOTHING
-# ==========================================
+# ============================================================
 
-emotion_history = deque(maxlen=7)
+emotion_history = deque(maxlen=5)
 
 
 def smooth_emotion(emotion):
 
     emotion_history.append(emotion)
 
-    counts = Counter(
+    count = Counter(
         emotion_history
     )
 
-    return counts.most_common(1)[0][0]
+    return count.most_common(1)[0][0]
 
 
-# ==========================================
+# ============================================================
 # FACE DETECTOR
-# ==========================================
+# ============================================================
 
 face_detector = cv2.CascadeClassifier(
     CASCADE
@@ -120,18 +108,17 @@ face_detector = cv2.CascadeClassifier(
 
 if face_detector.empty():
 
-    print("Face detector error!")
-    print("Check path:")
-    print(CASCADE)
+    print("ERROR: Face detector could not be loaded.")
+    print("Path:", CASCADE)
 
     sys.exit()
 
-print("Face detector: OK")
+print("Face detector loaded successfully.")
 
 
-# ==========================================
-# MOBILE NET SSD
-# ==========================================
+# ============================================================
+# MOBILE-NET SSD
+# ============================================================
 
 try:
 
@@ -140,18 +127,19 @@ try:
         SSD_MODEL
     )
 
-    print("MobileNet-SSD: OK")
+    print("MobileNet-SSD loaded successfully.")
 
 except Exception as e:
 
-    print("MobileNet-SSD error:")
+    print("ERROR: MobileNet-SSD could not be loaded.")
     print(e)
+
     sys.exit()
 
 
-# ==========================================
-# MOBILE NET SSD CLASSES
-# ==========================================
+# ============================================================
+# OBJECT CLASSES
+# ============================================================
 
 classes = [
     "background",
@@ -178,9 +166,9 @@ classes = [
 ]
 
 
-# ==========================================
+# ============================================================
 # CAMERA
-# ==========================================
+# ============================================================
 
 try:
 
@@ -194,102 +182,136 @@ try:
     )
 
     camera.configure(config)
+
     camera.start()
 
-    print("Camera: OK")
+    print("Camera started successfully.")
 
 except Exception as e:
 
-    print("Camera error:")
+    print("ERROR: Camera could not start.")
     print(e)
+
     sys.exit()
 
 
 print()
-print("==============================")
+print("--------------------------------")
 print(" AI COMPANION STARTED")
-print("==============================")
+print("--------------------------------")
 print("Press Q to quit.")
 print()
 
 
-# ==========================================
+# ============================================================
 # VARIABLES
-# ==========================================
+# ============================================================
 
 frame_count = 0
 
-# Object detection every 5 frames
-OBJECT_INTERVAL = 5
+OBJECT_INTERVAL = 8
+
+current_emotion = "Neutral"
 
 last_objects = []
 
-current_emotion = "neutral"
 
-
-# ==========================================
+# ============================================================
 # MAIN LOOP
-# ==========================================
+# ============================================================
 
 while True:
 
-    # ======================================
-    # CAPTURE FRAME
-    # ======================================
+    # --------------------------------------------------------
+    # CAPTURE ORIGINAL RGB FRAME
+    # --------------------------------------------------------
 
-    frame = camera.capture_array()
-
-    # RGB → BGR
-    frame = cv2.cvtColor(
-        frame,
-        cv2.COLOR_RGB2BGR
-    )
+    rgb_frame = camera.capture_array()
 
     frame_count += 1
 
 
-    # ======================================
+    # --------------------------------------------------------
+    # CREATE BGR COPY ONLY FOR OPENCV DISPLAY
+    # --------------------------------------------------------
+
+    frame = cv2.cvtColor(
+        rgb_frame,
+        cv2.COLOR_RGB2BGR
+    )
+
+
+    # ========================================================
     # FACE DETECTION
-    # ======================================
+    # ========================================================
 
     gray = cv2.cvtColor(
         frame,
         cv2.COLOR_BGR2GRAY
     )
 
+
     faces = face_detector.detectMultiScale(
         gray,
-        scaleFactor=1.2,
-        minNeighbors=5,
-        minSize=(60, 60)
+        scaleFactor=1.15,
+        minNeighbors=6,
+        minSize=(70, 70)
     )
 
 
-    # ======================================
+    # ========================================================
     # EMOTION DETECTION
-    # ======================================
+    # ========================================================
 
     for (x, y, w, h) in faces:
 
+        # ----------------------------------------------------
         # Extract face
+        # ----------------------------------------------------
+
         face = gray[
             y:y+h,
             x:x+w
         ]
 
-        # Resize for FER+
+
+        if face.size == 0:
+
+            continue
+
+
+        # ----------------------------------------------------
+        # Resize to FER+ input
+        # ----------------------------------------------------
+
         face = cv2.resize(
             face,
-            (64, 64)
+            (64, 64),
+            interpolation=cv2.INTER_AREA
         )
 
-        # Normalize
+
+        # ----------------------------------------------------
+        # IMPORTANT:
+        #
+        # FER+ expects grayscale pixel values.
+        # Do NOT divide by 255.
+        # ----------------------------------------------------
+
         face = face.astype(
             np.float32
-        ) / 255.0
+        )
 
+
+        # ----------------------------------------------------
         # Shape:
-        # 1 × 1 × 64 × 64
+        #
+        # 64 x 64
+        #       ↓
+        # 1 x 64 x 64
+        #       ↓
+        # 1 x 1 x 64 x 64
+        # ----------------------------------------------------
 
         face = np.expand_dims(
             face,
@@ -301,7 +323,11 @@ while True:
             axis=0
         )
 
-        # Run emotion model
+
+        # ----------------------------------------------------
+        # Run FER+ model
+        # ----------------------------------------------------
+
         result = emotion_net.run(
             [emotion_output],
             {
@@ -309,25 +335,62 @@ while True:
             }
         )[0]
 
-        # Get robot emotion
-        detected_emotion = get_robot_emotion(
-            result
+
+        # ----------------------------------------------------
+        # Convert scores to probabilities
+        # ----------------------------------------------------
+
+        probabilities = softmax(
+            result[0]
         )
 
+
+        # ----------------------------------------------------
+        # Find strongest emotion
+        # ----------------------------------------------------
+
+        emotion_id = np.argmax(
+            probabilities
+        )
+
+        detected_emotion = emotions[
+            emotion_id
+        ]
+
+
+        # ----------------------------------------------------
         # Smooth emotion
+        # ----------------------------------------------------
+
         current_emotion = smooth_emotion(
             detected_emotion
         )
 
-        # Print emotion
+
+        confidence = probabilities[
+            emotion_id
+        ] * 100
+
+
+        # ----------------------------------------------------
+        # Terminal output
+        # ----------------------------------------------------
+
         print(
             "Emotion:",
-            current_emotion
+            current_emotion,
+            "| Confidence:",
+            round(
+                float(confidence),
+                1
+            ),
+            "%"
         )
 
-        # ==================================
-        # FACE BOX
-        # ==================================
+
+        # ====================================================
+        # DRAW FACE BOX
+        # ====================================================
 
         cv2.rectangle(
             frame,
@@ -337,28 +400,41 @@ while True:
             2
         )
 
-        # ==================================
-        # EMOTION LABEL
-        # ==================================
+
+        # ====================================================
+        # EMOTION TEXT
+        # ====================================================
+
+        text = (
+            current_emotion
+            + " "
+            + str(
+                round(
+                    float(confidence),
+                    1
+                )
+            )
+            + "%"
+        )
+
 
         cv2.putText(
             frame,
-            "Emotion: " + current_emotion,
+            text,
             (x, y - 10),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
+            0.65,
             (0, 255, 0),
             2
         )
 
 
-    # ======================================
+    # ========================================================
     # OBJECT DETECTION
-    # ======================================
+    # ========================================================
 
     if frame_count % OBJECT_INTERVAL == 0:
 
-        # Create MobileNet-SSD input
         blob = cv2.dnn.blobFromImage(
             frame,
             scalefactor=0.007843,
@@ -368,20 +444,24 @@ while True:
             crop=False
         )
 
+
         object_net.setInput(
             blob
         )
 
+
         detections = object_net.forward()
 
+
         last_objects = []
+
 
         height, width = frame.shape[:2]
 
 
-        # ==================================
-        # PROCESS DETECTIONS
-        # ==================================
+        # ====================================================
+        # PROCESS OBJECTS
+        # ====================================================
 
         for i in range(
             detections.shape[2]
@@ -391,9 +471,11 @@ while True:
                 0, 0, i, 2
             ]
 
-            # Confidence threshold
+
             if confidence < 0.50:
+
                 continue
+
 
             class_id = int(
                 detections[
@@ -401,29 +483,34 @@ while True:
                 ]
             )
 
+
             if (
                 class_id < 0
                 or
                 class_id >= len(classes)
             ):
+
                 continue
+
 
             object_name = classes[
                 class_id
             ]
 
-            # Save object
+
             last_objects.append(
                 object_name
             )
 
-            # ==================================
-            # BOUNDING BOX
-            # ==================================
+
+            # ------------------------------------------------
+            # Bounding box
+            # ------------------------------------------------
 
             box = detections[
                 0, 0, i, 3:7
             ]
+
 
             box = box * np.array(
                 [
@@ -434,11 +521,12 @@ while True:
                 ]
             )
 
-            x1, y1, x2, y2 = box.astype(
-                int
+
+            x1, y1, x2, y2 = (
+                box.astype(int)
             )
 
-            # Keep inside frame
+
             x1 = max(
                 0,
                 x1
@@ -459,9 +547,10 @@ while True:
                 y2
             )
 
-            # ==================================
-            # DRAW OBJECT BOX
-            # ==================================
+
+            # ------------------------------------------------
+            # Draw object box
+            # ------------------------------------------------
 
             cv2.rectangle(
                 frame,
@@ -471,9 +560,10 @@ while True:
                 2
             )
 
-            # ==================================
-            # OBJECT LABEL
-            # ==================================
+
+            # ------------------------------------------------
+            # Object label
+            # ------------------------------------------------
 
             label = (
                 object_name
@@ -486,6 +576,7 @@ while True:
                 )
             )
 
+
             cv2.putText(
                 frame,
                 label,
@@ -497,37 +588,19 @@ while True:
                     )
                 ),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
+                0.55,
                 (255, 0, 0),
                 2
             )
 
 
-    # ======================================
-    # TERMINAL OBJECT OUTPUT
-    # ======================================
-
-    if last_objects:
-
-        unique_objects = list(
-            set(last_objects)
-        )
-
-        print(
-            "Objects:",
-            ", ".join(
-                unique_objects
-            )
-        )
-
-
-    # ======================================
-    # DISPLAY CURRENT EMOTION
-    # ======================================
+    # ========================================================
+    # TOP STATUS BAR
+    # ========================================================
 
     cv2.putText(
         frame,
-        "Robot Emotion: " + current_emotion,
+        "Emotion: " + current_emotion,
         (10, 30),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.7,
@@ -536,28 +609,28 @@ while True:
     )
 
 
-    # ======================================
-    # DISPLAY CAMERA
-    # ======================================
+    # ========================================================
+    # DISPLAY
+    # ========================================================
 
     cv2.imshow(
-        "Raspberry Pi AI Companion",
+        "AI Companion",
         frame
     )
 
 
-    # ======================================
+    # ========================================================
     # QUIT
-    # ======================================
+    # ========================================================
 
     if cv2.waitKey(1) & 0xFF == ord("q"):
 
         break
 
 
-# ==========================================
+# ============================================================
 # CLEANUP
-# ==========================================
+# ============================================================
 
 camera.stop()
 
