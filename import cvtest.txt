@@ -3,31 +3,47 @@ import numpy as np
 import onnxruntime as ort
 from picamera2 import Picamera2
 import sys
-import time
 
 
 # ==========================================
-# 1. EMOTION MODEL
+# FILE PATHS
 # ==========================================
 
 EMOTION_MODEL = "/home/majorproject/Downloads/emotion_model.onnx"
 
+SSD_PROTOTXT = "/home/majorproject/Downloads/mobilenet/MobileNetSSD_deploy.prototxt"
+
+SSD_MODEL = "/home/majorproject/Downloads/mobilenet/MobileNetSSD_deploy.caffemodel"
+
+CASCADE = "/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml"
+
+
+# ==========================================
+# EMOTION MODEL
+# ==========================================
+
 try:
-    emotion_session = ort.InferenceSession(
+
+    emotion_net = ort.InferenceSession(
         EMOTION_MODEL,
         providers=["CPUExecutionProvider"]
     )
 
-    emotion_input = emotion_session.get_inputs()[0].name
-    emotion_output = emotion_session.get_outputs()[0].name
+    emotion_input = emotion_net.get_inputs()[0].name
+    emotion_output = emotion_net.get_outputs()[0].name
 
-    print("Emotion model loaded successfully.")
+    print("Emotion model: OK")
 
 except Exception as e:
-    print("ERROR: Could not load emotion model.")
+
+    print("Emotion model error:")
     print(e)
     sys.exit()
 
+
+# ==========================================
+# EMOTIONS
+# ==========================================
 
 emotions = [
     "neutral",
@@ -42,36 +58,45 @@ emotions = [
 
 
 # ==========================================
-# 2. MOBILENET-SSD OBJECT DETECTOR
+# FACE DETECTOR
 # ==========================================
 
-SSD_CONFIG = (
-    "/home/majorproject/Downloads/mobilenet/"
-    "MobileNetSSD_deploy.prototxt"
-)
+face_detector = cv2.CascadeClassifier(CASCADE)
 
-SSD_MODEL = (
-    "/home/majorproject/Downloads/mobilenet/"
-    "MobileNetSSD_deploy.caffemodel"
-)
+if face_detector.empty():
+
+    print("Face detector error!")
+    print("Check:", CASCADE)
+
+    sys.exit()
+
+print("Face detector: OK")
+
+
+# ==========================================
+# MOBILE NET SSD
+# ==========================================
 
 try:
 
     object_net = cv2.dnn.readNetFromCaffe(
-        SSD_CONFIG,
+        SSD_PROTOTXT,
         SSD_MODEL
     )
 
-    print("MobileNet-SSD loaded successfully.")
+    print("MobileNet-SSD: OK")
 
 except Exception as e:
 
-    print("ERROR: Could not load MobileNet-SSD.")
+    print("MobileNet-SSD error:")
     print(e)
     sys.exit()
 
 
-# MobileNet-SSD classes
+# ==========================================
+# OBJECT CLASSES
+# ==========================================
+
 classes = [
     "background",
     "aeroplane",
@@ -98,85 +123,72 @@ classes = [
 
 
 # ==========================================
-# 3. FACE DETECTOR
+# CAMERA
 # ==========================================
 
-CASCADE_PATH = (
-    "/usr/share/opencv4/haarcascades/"
-    "haarcascade_frontalface_default.xml"
-)
+try:
 
-face_cascade = cv2.CascadeClassifier(
-    CASCADE_PATH
-)
+    camera = Picamera2()
 
-if face_cascade.empty():
+    config = camera.create_preview_configuration(
+        main={
+            "size": (640, 480),
+            "format": "RGB888"
+        }
+    )
 
-    print("ERROR: Face detector could not be loaded!")
-    print("Path:", CASCADE_PATH)
+    camera.configure(config)
+    camera.start()
 
+    print("Camera: OK")
+
+except Exception as e:
+
+    print("Camera error:")
+    print(e)
     sys.exit()
 
-print("Face detector loaded successfully.")
 
-
-# ==========================================
-# 4. CAMERA
-# ==========================================
-
-picam2 = Picamera2()
-
-camera_config = picam2.create_preview_configuration(
-    main={
-        "size": (640, 480),
-        "format": "RGB888"
-    }
-)
-
-picam2.configure(camera_config)
-picam2.start()
-
-print("Camera started.")
+print("\nSystem started.")
 print("Press Q to quit.")
 
 
 # ==========================================
-# 5. VARIABLES
-# ==========================================
-
-frame_count = 0
-
-# Run object detection every 5 frames
-OBJECT_INTERVAL = 5
-
-last_objects = []
-
-
-# ==========================================
-# 6. MAIN LOOP
+# MAIN LOOP
 # ==========================================
 
 while True:
 
-    frame = picam2.capture_array()
+    # Capture image
+    frame = camera.capture_array()
 
-    frame_count += 1
+    # Convert RGB → BGR
+    frame = cv2.cvtColor(
+        frame,
+        cv2.COLOR_RGB2BGR
+    )
+
 
     # ======================================
-    # FACE + EMOTION DETECTION
+    # FACE DETECTION
     # ======================================
 
     gray = cv2.cvtColor(
         frame,
-        cv2.COLOR_RGB2GRAY
+        cv2.COLOR_BGR2GRAY
     )
 
-    faces = face_cascade.detectMultiScale(
+    faces = face_detector.detectMultiScale(
         gray,
         scaleFactor=1.2,
         minNeighbors=5,
         minSize=(60, 60)
     )
+
+
+    # ======================================
+    # EMOTION DETECTION
+    # ======================================
 
     for (x, y, w, h) in faces:
 
@@ -204,18 +216,23 @@ while True:
             axis=0
         )
 
-        result = emotion_session.run(
+        result = emotion_net.run(
             [emotion_output],
             {emotion_input: face}
         )[0]
 
-        emotion_index = np.argmax(result)
+        emotion_id = np.argmax(result)
 
         emotion = emotions[
-            emotion_index
+            emotion_id
         ]
 
-        # Draw face
+        print(
+            "Emotion:",
+            emotion
+        )
+
+        # Face box
         cv2.rectangle(
             frame,
             (x, y),
@@ -224,12 +241,13 @@ while True:
             2
         )
 
+        # Emotion text
         cv2.putText(
             frame,
-            "Emotion: " + emotion,
-            (x, y - 10),
+            emotion,
+            (x, y-10),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
+            0.7,
             (0, 255, 0),
             2
         )
@@ -239,107 +257,93 @@ while True:
     # OBJECT DETECTION
     # ======================================
 
-    # Only run every 5 frames
-    if frame_count % OBJECT_INTERVAL == 0:
+    blob = cv2.dnn.blobFromImage(
+        frame,
+        scalefactor=0.007843,
+        size=(300, 300),
+        mean=127.5,
+        swapRB=False,
+        crop=False
+    )
 
-        blob = cv2.dnn.blobFromImage(
-            frame,
-            scalefactor=0.007843,
-            size=(300, 300),
-            mean=127.5,
-            swapRB=False,
-            crop=False
+    object_net.setInput(blob)
+
+    detections = object_net.forward()
+
+
+    # ======================================
+    # PROCESS OBJECTS
+    # ======================================
+
+    height, width = frame.shape[:2]
+
+    for i in range(
+        detections.shape[2]
+    ):
+
+        confidence = detections[
+            0, 0, i, 2
+        ]
+
+        # Ignore weak detections
+        if confidence < 0.50:
+            continue
+
+        class_id = int(
+            detections[
+                0, 0, i, 1
+            ]
         )
 
-        object_net.setInput(blob)
+        if class_id < 0 or class_id >= len(classes):
+            continue
 
-        detections = object_net.forward()
+        object_name = classes[
+            class_id
+        ]
 
-        last_objects = []
+        # Bounding box
+        box = detections[
+            0, 0, i, 3:7
+        ]
 
-        for i in range(
-            detections.shape[2]
-        ):
+        box = box * np.array(
+            [width, height, width, height]
+        )
 
-            confidence = detections[
-                0, 0, i, 2
-            ]
+        x1, y1, x2, y2 = box.astype(int)
 
-            if confidence < 0.50:
-                continue
-
-            class_id = int(
-                detections[
-                    0, 0, i, 1
-                ]
-            )
-
-            if class_id >= len(classes):
-                continue
-
-            object_name = classes[
-                class_id
-            ]
-
-            last_objects.append(
-                object_name
-            )
-
-            # Bounding box
-            h, w = frame.shape[:2]
-
-            box = detections[
-                0, 0, i, 3:7
-            ] * np.array(
-                [w, h, w, h]
-            )
-
-            x1, y1, x2, y2 = box.astype(
-                int
-            )
-
-            x1 = max(0, x1)
-            y1 = max(0, y1)
-            x2 = min(w, x2)
-            y2 = min(h, y2)
-
-            # Draw object
-            cv2.rectangle(
-                frame,
-                (x1, y1),
-                (x2, y2),
-                (255, 0, 0),
-                2
-            )
-
-            label = (
-                object_name
-                + " "
-                + str(round(float(confidence), 2))
-            )
-
-            cv2.putText(
-                frame,
-                label,
-                (x1, y1 - 5),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
-                (255, 0, 0),
-                2
-            )
-
-
-    # ======================================
-    # TERMINAL OUTPUT
-    # ======================================
-
-    if last_objects:
+        # Keep inside image
+        x1 = max(0, x1)
+        y1 = max(0, y1)
+        x2 = min(width, x2)
+        y2 = min(height, y2)
 
         print(
-            "Objects:",
-            ", ".join(
-                set(last_objects)
-            )
+            "Object:",
+            object_name,
+            "Confidence:",
+            round(float(confidence), 2)
+        )
+
+        # Object box
+        cv2.rectangle(
+            frame,
+            (x1, y1),
+            (x2, y2),
+            (255, 0, 0),
+            2
+        )
+
+        # Object name
+        cv2.putText(
+            frame,
+            object_name,
+            (x1, max(y1-5, 20)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (255, 0, 0),
+            2
         )
 
 
@@ -348,19 +352,20 @@ while True:
     # ======================================
 
     cv2.imshow(
-        "AI Companion",
+        "Raspberry Pi AI Companion",
         frame
     )
 
+    # Q = quit
     if cv2.waitKey(1) & 0xFF == ord("q"):
         break
 
 
 # ==========================================
-# 7. CLEANUP
+# CLEANUP
 # ==========================================
 
-picam2.stop()
+camera.stop()
 
 cv2.destroyAllWindows()
 
