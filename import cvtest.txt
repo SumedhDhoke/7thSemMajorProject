@@ -3,6 +3,7 @@ import numpy as np
 import onnxruntime as ort
 from picamera2 import Picamera2
 import sys
+from collections import deque, Counter
 
 
 # ==========================================
@@ -11,11 +12,20 @@ import sys
 
 EMOTION_MODEL = "/home/majorproject/Downloads/emotion_model.onnx"
 
-SSD_PROTOTXT = "/home/majorproject/Downloads/mobilenet/MobileNetSSD_deploy.prototxt"
+SSD_PROTOTXT = (
+    "/home/majorproject/Downloads/mobilenet/"
+    "MobileNetSSD_deploy.prototxt"
+)
 
-SSD_MODEL = "/home/majorproject/Downloads/mobilenet/MobileNetSSD_deploy.caffemodel"
+SSD_MODEL = (
+    "/home/majorproject/Downloads/mobilenet/"
+    "MobileNetSSD_deploy.caffemodel"
+)
 
-CASCADE = "/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml"
+CASCADE = (
+    "/usr/share/opencv4/haarcascades/"
+    "haarcascade_frontalface_default.xml"
+)
 
 
 # ==========================================
@@ -42,7 +52,7 @@ except Exception as e:
 
 
 # ==========================================
-# EMOTIONS
+# FER+ EMOTION LABELS
 # ==========================================
 
 emotions = [
@@ -58,15 +68,61 @@ emotions = [
 
 
 # ==========================================
+# MAP EMOTIONS FOR ROBOT
+# ==========================================
+
+def get_robot_emotion(result):
+
+    scores = result[0]
+
+    emotion_id = np.argmax(scores)
+
+    emotion = emotions[emotion_id]
+
+    # Simplify emotions for robot
+    if emotion == "disgust":
+        emotion = "anger"
+
+    elif emotion == "fear":
+        emotion = "surprise"
+
+    elif emotion == "contempt":
+        emotion = "neutral"
+
+    return emotion
+
+
+# ==========================================
+# EMOTION SMOOTHING
+# ==========================================
+
+emotion_history = deque(maxlen=7)
+
+
+def smooth_emotion(emotion):
+
+    emotion_history.append(emotion)
+
+    counts = Counter(
+        emotion_history
+    )
+
+    return counts.most_common(1)[0][0]
+
+
+# ==========================================
 # FACE DETECTOR
 # ==========================================
 
-face_detector = cv2.CascadeClassifier(CASCADE)
+face_detector = cv2.CascadeClassifier(
+    CASCADE
+)
 
 if face_detector.empty():
 
     print("Face detector error!")
-    print("Check:", CASCADE)
+    print("Check path:")
+    print(CASCADE)
 
     sys.exit()
 
@@ -94,7 +150,7 @@ except Exception as e:
 
 
 # ==========================================
-# OBJECT CLASSES
+# MOBILE NET SSD CLASSES
 # ==========================================
 
 classes = [
@@ -149,8 +205,26 @@ except Exception as e:
     sys.exit()
 
 
-print("\nSystem started.")
+print()
+print("==============================")
+print(" AI COMPANION STARTED")
+print("==============================")
 print("Press Q to quit.")
+print()
+
+
+# ==========================================
+# VARIABLES
+# ==========================================
+
+frame_count = 0
+
+# Object detection every 5 frames
+OBJECT_INTERVAL = 5
+
+last_objects = []
+
+current_emotion = "neutral"
 
 
 # ==========================================
@@ -159,14 +233,19 @@ print("Press Q to quit.")
 
 while True:
 
-    # Capture image
+    # ======================================
+    # CAPTURE FRAME
+    # ======================================
+
     frame = camera.capture_array()
 
-    # Convert RGB → BGR
+    # RGB → BGR
     frame = cv2.cvtColor(
         frame,
         cv2.COLOR_RGB2BGR
     )
+
+    frame_count += 1
 
 
     # ======================================
@@ -192,47 +271,64 @@ while True:
 
     for (x, y, w, h) in faces:
 
+        # Extract face
         face = gray[
             y:y+h,
             x:x+w
         ]
 
+        # Resize for FER+
         face = cv2.resize(
             face,
             (64, 64)
         )
 
+        # Normalize
         face = face.astype(
             np.float32
         ) / 255.0
 
-        face = np.expand_dims(
-            face,
-            axis=0
-        )
+        # Shape:
+        # 1 × 1 × 64 × 64
 
         face = np.expand_dims(
             face,
             axis=0
         )
 
+        face = np.expand_dims(
+            face,
+            axis=0
+        )
+
+        # Run emotion model
         result = emotion_net.run(
             [emotion_output],
-            {emotion_input: face}
+            {
+                emotion_input: face
+            }
         )[0]
 
-        emotion_id = np.argmax(result)
-
-        emotion = emotions[
-            emotion_id
-        ]
-
-        print(
-            "Emotion:",
-            emotion
+        # Get robot emotion
+        detected_emotion = get_robot_emotion(
+            result
         )
 
-        # Face box
+        # Smooth emotion
+        current_emotion = smooth_emotion(
+            detected_emotion
+        )
+
+        # Print emotion
+        print(
+            "Emotion:",
+            current_emotion
+        )
+
+        # ==================================
+        # FACE BOX
+        # ==================================
+
         cv2.rectangle(
             frame,
             (x, y),
@@ -241,11 +337,14 @@ while True:
             2
         )
 
-        # Emotion text
+        # ==================================
+        # EMOTION LABEL
+        # ==================================
+
         cv2.putText(
             frame,
-            emotion,
-            (x, y-10),
+            "Emotion: " + current_emotion,
+            (x, y - 10),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.7,
             (0, 255, 0),
@@ -257,98 +356,188 @@ while True:
     # OBJECT DETECTION
     # ======================================
 
-    blob = cv2.dnn.blobFromImage(
-        frame,
-        scalefactor=0.007843,
-        size=(300, 300),
-        mean=127.5,
-        swapRB=False,
-        crop=False
-    )
+    if frame_count % OBJECT_INTERVAL == 0:
 
-    object_net.setInput(blob)
+        # Create MobileNet-SSD input
+        blob = cv2.dnn.blobFromImage(
+            frame,
+            scalefactor=0.007843,
+            size=(300, 300),
+            mean=127.5,
+            swapRB=False,
+            crop=False
+        )
 
-    detections = object_net.forward()
+        object_net.setInput(
+            blob
+        )
+
+        detections = object_net.forward()
+
+        last_objects = []
+
+        height, width = frame.shape[:2]
 
 
-    # ======================================
-    # PROCESS OBJECTS
-    # ======================================
+        # ==================================
+        # PROCESS DETECTIONS
+        # ==================================
 
-    height, width = frame.shape[:2]
+        for i in range(
+            detections.shape[2]
+        ):
 
-    for i in range(
-        detections.shape[2]
-    ):
-
-        confidence = detections[
-            0, 0, i, 2
-        ]
-
-        # Ignore weak detections
-        if confidence < 0.50:
-            continue
-
-        class_id = int(
-            detections[
-                0, 0, i, 1
+            confidence = detections[
+                0, 0, i, 2
             ]
+
+            # Confidence threshold
+            if confidence < 0.50:
+                continue
+
+            class_id = int(
+                detections[
+                    0, 0, i, 1
+                ]
+            )
+
+            if (
+                class_id < 0
+                or
+                class_id >= len(classes)
+            ):
+                continue
+
+            object_name = classes[
+                class_id
+            ]
+
+            # Save object
+            last_objects.append(
+                object_name
+            )
+
+            # ==================================
+            # BOUNDING BOX
+            # ==================================
+
+            box = detections[
+                0, 0, i, 3:7
+            ]
+
+            box = box * np.array(
+                [
+                    width,
+                    height,
+                    width,
+                    height
+                ]
+            )
+
+            x1, y1, x2, y2 = box.astype(
+                int
+            )
+
+            # Keep inside frame
+            x1 = max(
+                0,
+                x1
+            )
+
+            y1 = max(
+                0,
+                y1
+            )
+
+            x2 = min(
+                width,
+                x2
+            )
+
+            y2 = min(
+                height,
+                y2
+            )
+
+            # ==================================
+            # DRAW OBJECT BOX
+            # ==================================
+
+            cv2.rectangle(
+                frame,
+                (x1, y1),
+                (x2, y2),
+                (255, 0, 0),
+                2
+            )
+
+            # ==================================
+            # OBJECT LABEL
+            # ==================================
+
+            label = (
+                object_name
+                + " "
+                + str(
+                    round(
+                        float(confidence),
+                        2
+                    )
+                )
+            )
+
+            cv2.putText(
+                frame,
+                label,
+                (
+                    x1,
+                    max(
+                        y1 - 5,
+                        20
+                    )
+                ),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (255, 0, 0),
+                2
+            )
+
+
+    # ======================================
+    # TERMINAL OBJECT OUTPUT
+    # ======================================
+
+    if last_objects:
+
+        unique_objects = list(
+            set(last_objects)
         )
-
-        if class_id < 0 or class_id >= len(classes):
-            continue
-
-        object_name = classes[
-            class_id
-        ]
-
-        # Bounding box
-        box = detections[
-            0, 0, i, 3:7
-        ]
-
-        box = box * np.array(
-            [width, height, width, height]
-        )
-
-        x1, y1, x2, y2 = box.astype(int)
-
-        # Keep inside image
-        x1 = max(0, x1)
-        y1 = max(0, y1)
-        x2 = min(width, x2)
-        y2 = min(height, y2)
 
         print(
-            "Object:",
-            object_name,
-            "Confidence:",
-            round(float(confidence), 2)
-        )
-
-        # Object box
-        cv2.rectangle(
-            frame,
-            (x1, y1),
-            (x2, y2),
-            (255, 0, 0),
-            2
-        )
-
-        # Object name
-        cv2.putText(
-            frame,
-            object_name,
-            (x1, max(y1-5, 20)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (255, 0, 0),
-            2
+            "Objects:",
+            ", ".join(
+                unique_objects
+            )
         )
 
 
     # ======================================
-    # DISPLAY
+    # DISPLAY CURRENT EMOTION
+    # ======================================
+
+    cv2.putText(
+        frame,
+        "Robot Emotion: " + current_emotion,
+        (10, 30),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        (0, 255, 0),
+        2
+    )
+
+
+    # ======================================
+    # DISPLAY CAMERA
     # ======================================
 
     cv2.imshow(
@@ -356,8 +545,13 @@ while True:
         frame
     )
 
-    # Q = quit
+
+    # ======================================
+    # QUIT
+    # ======================================
+
     if cv2.waitKey(1) & 0xFF == ord("q"):
+
         break
 
 
@@ -369,4 +563,5 @@ camera.stop()
 
 cv2.destroyAllWindows()
 
+print()
 print("Program stopped.")
